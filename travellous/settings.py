@@ -38,11 +38,14 @@ INSTALLED_APPS = [
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
+    'rest_framework.authtoken',
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework', # 1. Thư viện DRF
     'corsheaders',    # 2. Thư viện CORS
     'api',
+    'trips',
+    'authentication',
 ]
 
 MIDDLEWARE = [
@@ -139,7 +142,16 @@ CORS_ALLOW_ALL_ORIGINS = True
 
 # 4. Cấu hình Django REST Framework (DRF)
 REST_FRAMEWORK = {
-    # Cấu hình Pagination (để trả về key 'results' như bạn thấy)
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.TokenAuthentication', # <-- Dòng này BẮT BUỘC
+        'rest_framework.authentication.SessionAuthentication',
+    ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 10 # Trả về 10 item mỗi trang
 }
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'ttnguyen15b@gmail.com'
+EMAIL_HOST_PASSWORD = 'gtft abww jnfx cmvl'

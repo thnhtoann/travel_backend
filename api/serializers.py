@@ -6,7 +6,10 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'phone_number'] 
-
+class UserLocationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['latitude', 'longitude']
 class TagSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tag

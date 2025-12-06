@@ -19,4 +19,6 @@ urlpatterns = [
         views.TravelAdviceView.as_view(), 
         name='get-travel-advice'
     ),
+    path('optimize-route/', views.OptimizeRouteView.as_view(), name='optimize-route'),
+    path('places/nearby/', views.NearbyPlacesView.as_view())
 ]
