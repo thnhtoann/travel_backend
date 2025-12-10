@@ -48,3 +48,15 @@ class CarouselSlideSerializer(serializers.ModelSerializer):
     class Meta:
         model = CarouselSlide
         fields = '__all__'
+
+class PlaceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Place
+        fields = ['id', 'place_id', 'name', 'address', 'lat', 'lon', 'rating', 'reviews', 'price', 'image', 'working_hours', 'open_state']
+        # Ánh xạ thêm trường is_recommended để Frontend dùng luôn
+        extra_kwargs = {'id': {'read_only': True}}
+    
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['is_recommended'] = True # Mặc định là True cho logic hiển thị
+        return data

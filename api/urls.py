@@ -20,5 +20,6 @@ urlpatterns = [
         name='get-travel-advice'
     ),
     path('optimize-route/', views.OptimizeRouteView.as_view(), name='optimize-route'),
+    path('traffic/predict/', views.PredictTrafficView.as_view(), name='traffic-predict'),
     path('places/nearby/', views.NearbyPlacesView.as_view())
 ]

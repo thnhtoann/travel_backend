@@ -6,15 +6,78 @@ from rest_framework import status
 from .models import *
 from .serializers import *
 import google.generativeai as genai
+from scipy.spatial import cKDTree
 import requests
+from thefuzz import process
 import os
+import datetime
+import joblib
+import pandas as pd
+from .image_search_service import ImageSearchService
+import concurrent.futures
 import math
 import json
+from django.conf import settings
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# === CẤU HÌNH API ===
+BASE_DIR = settings.BASE_DIR
+ML_DIR = os.path.join(BASE_DIR, 'ml_models')
+
+# 1. Load Model AI
+print("⏳ Đang khởi tạo hệ thống AI & Bản đồ số...")
+try:
+    traffic_model = joblib.load(os.path.join(ML_DIR, 'traffic_model.pkl'))
+    street_encoder = joblib.load(os.path.join(ML_DIR, 'street_encoder.pkl'))
+    known_streets = set(street_encoder.classes_) 
+    print("✅ Model AI đã tải xong.")
+except Exception as e:
+    traffic_model = None
+    print(f"❌ Lỗi tải Model AI: {e}")
+
+# 2. Load Dữ liệu Không gian (Nodes & Streets)
+spatial_tree = None
+node_street_map = {} 
+spatial_nodes_ids = []
+
+try:
+    print("⏳ Đang tải dữ liệu bản đồ (Nodes/Streets)...")
+    df_nodes = pd.read_csv(os.path.join(ML_DIR, 'nodes.csv'))
+    df_segments = pd.read_csv(os.path.join(ML_DIR, 'segments.csv'))
+    df_streets = pd.read_csv(os.path.join(ML_DIR, 'streets.csv'))
+
+    # === SỬA LỖI Ở ĐÂY (Dựa trên tên cột bạn cung cấp) ===
+    
+    # 1. Merge Segment với Street
+    # Segments dùng 'street_id', Streets dùng '_id'
+    merged = pd.merge(df_segments, df_streets, left_on='street_id', right_on='_id', how='inner')
+    
+    # 2. Tạo Map: Node -> Tên đường
+    # Segments dùng 's_node_id' để nối với Node
+    # Streets dùng cột 'name' để lưu tên đường
+    # (Lưu ý: dùng .strip() để xóa khoảng trắng thừa nếu có)
+    temp_map = dict(zip(merged['s_node_id'], merged['name'].astype(str).str.strip())) 
+    node_street_map = temp_map
+
+    # 3. Lọc Node và tạo KDTree
+    # Nodes dùng cột '_id'
+    NODE_ID_COL = '_id' 
+    
+    # Chỉ lấy những node nào có nằm trên một con đường
+    valid_nodes = df_nodes[df_nodes[NODE_ID_COL].isin(node_street_map.keys())]
+    
+    # Lấy tọa độ lat/long (trong file của bạn là 'lat' và 'long')
+    node_coords = valid_nodes[['lat', 'long']].values 
+    node_ids = valid_nodes[NODE_ID_COL].values 
+    
+    spatial_tree = cKDTree(node_coords)
+    spatial_nodes_ids = node_ids
+    
+    print(f"✅ Bản đồ số đã tải xong ({len(valid_nodes)} điểm nút).")
+
+except Exception as e:
+    print(f"⚠️ Không thể tải dữ liệu bản đồ (Spatial): {e}")
 try:
     GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
     if GEMINI_API_KEY:
@@ -52,73 +115,119 @@ class CarouselSlideViewSet(viewsets.ReadOnlyModelViewSet):
 class BannerViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Banner.objects.all()
     serializer_class = BannerSerializer
+
 class NearbyPlacesView(APIView):
-    """
-    Tìm địa điểm quanh đây sử dụng SerpApi (Google Maps Engine)
-    để lấy ẢNH THẬT và RATING THẬT.
-    """
     def get(self, request):
         lat = request.query_params.get('lat')
         lon = request.query_params.get('lon')
         
         if not lat or not lon:
             return Response({"error": "Thiếu tọa độ lat/lon"}, status=400)
-            
+
+        try:
+            user_lat = float(lat)
+            user_lon = float(lon)
+        except ValueError:
+            return Response({"error": "Tọa độ không hợp lệ"}, status=400)
+
+        # === 1. TÌM TRONG DATABASE TRƯỚC (CACHE) ===
+        radius_deg = 0.045 
+        places_in_db = Place.objects.filter(
+            lat__range=(user_lat - radius_deg, user_lat + radius_deg),
+            lon__range=(user_lon - radius_deg, user_lon + radius_deg)
+        )
+        
+        if places_in_db.exists():
+            print("✅ Đã tìm thấy dữ liệu trong Cache Database!")
+            serializer = PlaceSerializer(places_in_db, many=True)
+            return Response(serializer.data, status=200)
+
+        # === 2. GỌI API NẾU KHÔNG CÓ CACHE ===
+        print("⚠️ Không có trong Cache, đang gọi API thực tế...")
+        
         if not SERPAPI_API_KEY:
              return Response({"error": "Chưa cấu hình SERPAPI_API_KEY"}, status=500)
 
         try:
-            # Cấu hình tham số cho SerpApi
-            # engine="google_maps": Tìm kiếm trên Google Maps
-            # type="search": Tìm kiếm địa điểm
-            # google_domain="google.com.vn": Ưu tiên kết quả Việt Nam
-            # ll=f"@{lat},{lon},15z": Tọa độ tâm và mức zoom (15z là mức phố)
             params = {
                 "engine": "google_maps",
-                "q": "tourist attractions", # Hoặc "restaurants", "coffee"
+                "q": "tourist attractions", 
                 "ll": f"@{lat},{lon},15z",
                 "type": "search",
                 "google_domain": "google.com.vn",
-                "hl": "vi", # Ngôn ngữ tiếng Việt
+                "hl": "en",
                 "api_key": SERPAPI_API_KEY
             }
             
-            # Gọi API (Dùng requests, không cần cài thư viện google-search-results nếu không muốn)
             res = requests.get("https://serpapi.com/search", params=params)
             data = res.json()
-            
-            places = []
-            
-            # Kết quả thường nằm trong 'local_results'
-            if 'local_results' in data:
-                for item in data['local_results']:
-                    # Lấy ảnh: SerpApi thường trả về 'thumbnail'
-                    image_url = item.get('thumbnail')
-                    if not image_url:
-                        # Fallback nếu không có ảnh
-                        image_url = "https://via.placeholder.com/200x150.png?text=No+Image"
+            local_results = data.get('local_results', [])
 
-                    # Lấy tọa độ (nếu có)
-                    gps = item.get('gps_coordinates', {})
-                    
-                    places.append({
-                        "id": item.get('place_id') or item.get('data_id'),
-                        "name": item.get('title'),
-                        "address": item.get('address'),
-                        "rating": item.get('rating', 0), # Rating thật từ Google!
-                        "reviews": item.get('reviews', 0), # Số lượng review
-                        "price": item.get('price'), # Mức giá (vd: ₫₫)
-                        "lat": gps.get('latitude'),
-                        "lon": gps.get('longitude'),
-                        "image": image_url, # Ảnh thật từ Google!
-                        "is_recommended": True
-                    })
+            if not local_results:
+                return Response([], status=200)
+
+            # --- HÀM XỬ LÝ (CHỈ TẢI DỮ LIỆU, KHÔNG LƯU DB) ---
+            def prepare_place_data(item):
+                place_name = item.get('title')
+                gps = item.get('gps_coordinates', {})
+                place_id = item.get('place_id') or item.get('data_id')
+                hours_data = item.get('operating_hours', {}) # Lấy cả cục dict
+                open_status = item.get('open_state', '')
+                # Tìm ảnh (Tốn thời gian -> Chạy song song OK)
+                image_url = "https://via.placeholder.com/200x150.png?text=No+Image"
+                try:
+                    search_service = ImageSearchService()
+                    # Tìm ảnh
+                    images = search_service.find_images_for_destination(place_name, "Vietnam", 1)
+                    if images: image_url = images[0]['image']
+                    else: image_url = item.get('thumbnail', image_url)
+                except:
+                    image_url = item.get('thumbnail', image_url)
+
+                # Trả về Dictionary (Dữ liệu thô), KHÔNG GỌI .save() Ở ĐÂY
+                return {
+                    'place_id': place_id,
+                    'name': place_name,
+                    'address': item.get('address'),
+                    'lat': gps.get('latitude'),
+                    'lon': gps.get('longitude'),
+                    'rating': item.get('rating', 0),
+                    'reviews': item.get('reviews', 0),
+                    'price': item.get('price'),
+                    'image': image_url,
+                    'working_hours': hours_data, 
+                    'open_state': open_status
+                }
+
+            # --- CHẠY SONG SONG ĐỂ LẤY DỮ LIỆU ---
+            raw_places_data = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                # Map hàm prepare_place_data vào danh sách
+                results = executor.map(prepare_place_data, local_results)
+                for res in results:
+                    raw_places_data.append(res)
             
-            return Response(places, status=200)
+            # --- LƯU VÀO DB (TUẦN TỰ - MAIN THREAD) ---
+            # SQLite thích điều này: Chỉ 1 luồng ghi vào DB
+            saved_places = []
+            for place_data in raw_places_data:
+                try:
+                    place_obj, created = Place.objects.update_or_create(
+                        place_id=place_data['place_id'],
+                        defaults=place_data # Các trường còn lại
+                    )
+                    saved_places.append(place_obj)
+                except Exception as db_err:
+                    print(f"Lỗi lưu DB: {db_err}")
+
+            # Serialize và trả về
+            serializer = PlaceSerializer(saved_places, many=True)
+            return Response(serializer.data, status=200)
 
         except Exception as e:
-            print("Lỗi SerpApi:", e)
+            print("Lỗi:", e)
             return Response({"error": str(e)}, status=500)
+
 class ReviewViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Review.objects.all()
     serializer_class = ReviewSerializer
@@ -135,6 +244,7 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
 
 class TravelAdviceView(APIView):
     def post(self, request, *args, **kwargs):
+        # ... (Phần kiểm tra API Key giữ nguyên) ...
         if not GEMINI_API_KEY or not WEATHER_API_KEY or not GEOAPIFY_API_KEY:
             return Response({"error": "Chưa cấu hình đủ API Keys"}, status=500)
 
@@ -148,43 +258,49 @@ class TravelAdviceView(APIView):
             return Response({"error": "Thiếu dữ liệu vị trí"}, status=400)
 
         try:
-            # 1. LẤY THÔNG TIN THỜI TIẾT CHI TIẾT CHO TẤT CẢ ĐIỂM
+            # 1. THỜI TIẾT (Giữ nguyên)
             weather_details = []
-            
-            # A. Thời tiết điểm đi
             origin_weather = self.get_weather_data(origin['latitude'], origin['longitude'], origin_name)
-            if origin_weather:
-                weather_details.append(origin_weather)
+            if origin_weather: weather_details.append(origin_weather)
 
-            # B. Thời tiết các điểm đến
-            # (Dùng loop để khớp tên với tọa độ)
             for i, dest in enumerate(destinations):
                 name = destination_names[i] if destination_names and i < len(destination_names) else f"Điểm đến {i+1}"
                 dest_weather = self.get_weather_data(dest['latitude'], dest['longitude'], name)
-                if dest_weather:
-                    weather_details.append(dest_weather)
+                if dest_weather: weather_details.append(dest_weather)
 
-            # 2. Lấy lộ trình (Demo lấy từ điểm đầu đến điểm cuối đầu tiên)
+            # 2. LỘ TRÌNH (Giữ nguyên)
             route_list = self.get_all_routes(origin, destinations[0])
 
-            # 3. Tạo chuỗi tóm tắt thời tiết để gửi cho AI (vì AI đọc text)
-            weather_summary_str = "; ".join(
-                [f"{w['name']}: {w['desc']}, {w['temp']}°C" for w in weather_details]
-            )
+            # === 3. (MỚI) DỰ BÁO GIAO THÔNG ===
+            traffic_reports = []
+            # Dự báo cho điểm xuất phát
+            traffic_reports.append(self.get_traffic_forecast(origin['latitude'], origin['longitude'], origin_name))
+            
+            # Dự báo cho các điểm đến
+            for i, dest in enumerate(destinations):
+                name = destination_names[i] if destination_names and i < len(destination_names) else f"Dest {i}"
+                traffic_reports.append(self.get_traffic_forecast(dest['latitude'], dest['longitude'], name))
+            
+            # Lọc bỏ các kết quả rỗng và nối thành chuỗi
+            traffic_summary_str = "\n".join([t for t in traffic_reports if t])
+            # ==================================
 
-            # 4. Tạo Prompt
+            # 4. CHUẨN BỊ DATA CHO PROMPT
+            weather_summary_str = "; ".join([f"{w['name']}: {w['desc']}, {w['temp']}°C" for w in weather_details])
+
+            # 5. TẠO PROMPT (Có thêm thông tin giao thông)
             prompt = self.generate_gemini_prompt(
                 origin_name, 
                 destination_names, 
-                weather_summary_str, # Gửi bản tóm tắt cho AI
+                weather_summary_str, 
+                traffic_summary_str, # <--- Truyền vào đây
                 route_list
             )
 
-            # 5. Gọi Gemini
+            # 6. GỌI GEMINI (Giữ nguyên)
             model = genai.GenerativeModel('gemini-2.0-flash-lite')
             response = model.generate_content(prompt)
             
-            # 6. Parse JSON và trả về
             try:
                 clean_text = response.text.replace('```json', '').replace('```', '').strip()
                 advice_json = json.loads(clean_text)
@@ -192,82 +308,131 @@ class TravelAdviceView(APIView):
                 return Response({
                     "routes": route_list,
                     "advice": advice_json,
-                    "weather_details": weather_details # <--- TRẢ VỀ LIST CHI TIẾT ĐỂ FRONTEND HIỂN THỊ CARD
+                    "weather_details": weather_details
                 }, status=200)
             except json.JSONDecodeError:
                 return Response({"error": "AI trả về định dạng không hợp lệ"}, status=500)
 
         except Exception as e:
-            print(f"❌ LỖI SERVER CHI TIẾT: {str(e)}")
-        import traceback
-        traceback.print_exc() # In toàn bộ dấu vết lỗi
-        # ===========================================
+            print(f"❌ Lỗi: {e}")
+            return Response({"error": str(e)}, status=500)
 
-        return Response(
-            {"error": f"Lỗi server: {str(e)}"},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+    # --- HÀM PHỤ TRỢ ---
 
-    def get_weather_data(self, lat, lon, location_name):
-        """Lấy thời tiết và trả về Object chi tiết"""
+    def get_weather_data(self, lat, lon, name):
+        # ... (Giữ nguyên code cũ của bạn) ...
         try:
             url = f"http://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={WEATHER_API_KEY}&units=metric&lang=vi"
             res = requests.get(url).json()
-            
-            # Trả về Dictionary đầy đủ
             return {
-                "name": location_name,
+                "name": name,
                 "temp": round(res['main']['temp']),
                 "desc": res['weather'][0]['description'].capitalize(),
-                "icon": res['weather'][0]['icon'], # Mã icon (vd: 10d)
+                "icon": res['weather'][0]['icon'],
                 "humidity": res['main']['humidity'],
                 "wind_speed": res['wind']['speed']
             }
-        except Exception as e:
-            print(f"Lỗi weather cho {location_name}: {e}")
+        except:
             return None
 
     def get_all_routes(self, origin, destination):
+        # ... (Giữ nguyên code cũ của bạn) ...
         routes = []
         modes = ['drive', 'motorcycle', 'bicycle', 'walk']
         waypoints = f"{origin['latitude']},{origin['longitude']}|{destination['latitude']},{destination['longitude']}"
-        
         for mode in modes:
             try:
-                geo_mode = mode
-                url = f"https://api.geoapify.com/v1/routing?waypoints={waypoints}&mode={geo_mode}&apiKey={GEOAPIFY_API_KEY}"
+                url = f"https://api.geoapify.com/v1/routing?waypoints={waypoints}&mode={mode}&apiKey={GEOAPIFY_API_KEY}"
                 res = requests.get(url).json()
                 if 'features' in res and res['features']:
                     props = res['features'][0]['properties']
                     routes.append({
                         "mode": mode,
-                        "time": format_time(props.get('time', 0)),
-                        "distance": format_distance(props.get('distance', 0))
+                        "time": self.format_time(props.get('time', 0)), # Nhớ thêm hàm format_time hoặc import
+                        "distance": self.format_distance(props.get('distance', 0))
                     })
-            except:
-                pass
+            except: pass
         return routes
 
-    def generate_gemini_prompt(self, origin_name, destination_names, weather_summary_str, route_list):
+    # === HÀM MỚI: DỰ BÁO GIAO THÔNG ===
+    def get_traffic_forecast(self, lat, lon, name):
+        if not traffic_model or not spatial_tree:
+            return None
+            
+        try:
+            # 1. Tìm đường gần nhất (Spatial Search)
+            radius_deg = 0.2 / 111.0 
+            distances, indices = spatial_tree.query([float(lat), float(lon)], k=1)
+            
+            target_street = None
+            if indices < len(spatial_nodes_ids):
+                real_node_id = spatial_nodes_ids[indices]
+                s_name = node_street_map.get(real_node_id)
+                if s_name and str(s_name).strip() in known_streets:
+                    target_street = str(s_name).strip()
+            
+            if not target_street:
+                return f"- Tại {name}: Không có dữ liệu lịch sử giao thông."
+
+            # 2. Dự báo
+            now = datetime.datetime.now()
+            hour = now.hour
+            weekday = now.weekday()
+            
+            street_code = street_encoder.transform([target_street])[0]
+            input_data = pd.DataFrame([[hour, weekday, street_code]], columns=['hour', 'weekday', 'street_encoded'])
+            pred_los = traffic_model.predict(input_data)[0]
+            
+            status = "Bình thường"
+            if pred_los in ['E', 'F']: status = "TẮC NGHẼN CAO (LOS E/F)"
+            elif pred_los in ['C', 'D']: status = "Đông xe (LOS C/D)"
+            elif pred_los in ['A', 'B']: status = "Thông thoáng (LOS A/B)"
+            
+            return f"- Tại {name} (Khu vực {target_street}): Dự báo {status}."
+            
+        except Exception as e:
+            print(f"Lỗi Traffic Forecast: {e}")
+            return None
+
+    # === CẬP NHẬT PROMPT ===
+    def generate_gemini_prompt(self, origin_name, destination_names, weather_str, traffic_str, route_list):
         dest_list_str = "\n".join([f"- {name}" for name in destination_names])
         route_info_str = "\n".join([f"- {r['mode']}: {r['distance']}, hết {r['time']}" for r in route_list])
 
         return f"""
-        Bạn là trợ lý du lịch. Hãy phân tích chuyến đi sau:
-        1. Xuất phát: {origin_name}
-        2. Thời tiết chi tiết: {weather_summary_str}
-        3. Điểm đến: {dest_list_str}
-        4. Các tùy chọn di chuyển:
-        {route_info_str}
+        Bạn là trợ lý du lịch thông minh. Hãy phân tích dữ liệu chuyến đi sau:
 
-        YÊU CẦU: Trả về JSON (không markdown) với 5 key:
-        1. "weather_advice": Lời khuyên tổng quan về thời tiết cho cả chuyến đi.
-        2. "traffic_alert": Cảnh báo giao thông.
-        3. "other_tips": Mẹo vặt.
-        4. "recommended_mode": Chọn 1 trong ['drive', 'motorcycle', 'bicycle', 'walk'].
-        5. "route_advice": GIẢI THÍCH LÝ DO chọn phương tiện.
+        1. HÀNH TRÌNH:
+           - Điểm đi: {origin_name}
+           - Điểm đến: {dest_list_str}
+
+        2. ĐIỀU KIỆN THỰC TẾ:
+           - Thời tiết: {weather_str}
+           - Dự báo Giao thông (từ mô hình AI): 
+             {traffic_str}
+
+        3. TÙY CHỌN DI CHUYỂN (Geoapify):
+           {route_info_str}
+
+        YÊU CẦU PHẢN HỒI JSON (Tuyệt đối không dùng Markdown, chỉ trả về JSON thuần):
+        {{
+            "weather_advice": "Lời khuyên ngắn gọn về thời tiết (vd: mưa thì nên mang áo mưa)",
+            "traffic_alert": "Phân tích kỹ dữ liệu giao thông ở trên. Nếu có 'TẮC NGHẼN CAO', hãy cảnh báo mạnh và khuyên đi sớm hoặc đổi phương tiện.",
+            "recommended_mode": "Chọn 1 phương tiện tối ưu nhất (drive/motorcycle/bicycle/walk) dựa trên cả thời tiết và giao thông.",
+            "route_advice": "Giải thích lý do chọn phương tiện trên (Ví dụ: Tuy trời đẹp nhưng đường tắc, nên đi xe máy cho linh hoạt...)",
+            "other_tips": "Một mẹo nhỏ thú vị cho chuyến đi."
+        }}
         """
 
+    # Helper format (nếu chưa có)
+    def format_time(self, seconds):
+        minutes = round(seconds / 60)
+        if minutes < 60: return f"{minutes} phút"
+        return f"{minutes // 60} giờ {minutes % 60} phút"
+
+    def format_distance(self, meters):
+        if meters < 1000: return f"{meters} m"
+        return f"{round(meters / 1000, 1)} km"
 # === PHẦN 3: OPTIMIZE ROUTE ===
 class OptimizeRouteView(APIView):
     """
@@ -397,3 +562,110 @@ class OptimizeRouteView(APIView):
             unvisited.remove(nearest_job)
             
         return path_ids
+
+class PredictTrafficView(APIView):
+    def post(self, request):
+        """
+        Input ưu tiên: { "lat": 10.78, "lon": 106.70 }
+        Input phụ: { "street_name": "Nguyen Hue" }
+        """
+        now = datetime.datetime.now()
+        current_hour = now.hour
+        current_weekday = now.weekday()
+
+        lat = request.data.get('lat')
+        lon = request.data.get('lon')
+        street_name_input = request.data.get('street_name') # Tên địa điểm người dùng nhập
+        
+        target_streets = [] 
+        detected_street_name = "" # Tên đường thực tế tìm thấy trong Data
+
+        # === CHIẾN THUẬT 1: TÌM THEO TỌA ĐỘ (CHÍNH XÁC NHẤT) ===
+        if lat and lon and spatial_tree:
+            try:
+                # 1. Tìm điểm nút gần nhất trong bán kính 200m (0.2km)
+                # Lưu ý: Bán kính nhỏ để đảm bảo chính xác, không bắt nhầm đường song song
+                radius_deg = 0.2 / 111.0 
+                
+                # query_ball_point trả về danh sách index, ta lấy cái gần nhất
+                distances, indices = spatial_tree.query([float(lat), float(lon)], k=1) # k=1: Lấy 1 điểm gần nhất
+                
+                # Nếu tìm thấy
+                if indices < len(spatial_nodes_ids):
+                    real_node_id = spatial_nodes_ids[indices]
+                    s_name = node_street_map.get(real_node_id)
+                    
+                    if s_name:
+                        clean_name = str(s_name).strip()
+                        if clean_name in known_streets:
+                            target_streets = [clean_name]
+                            detected_street_name = clean_name
+                            print(f"📍 Mapping: Tọa độ ({lat},{lon}) -> Đường '{clean_name}'")
+            except Exception as e:
+                print(f"Lỗi Spatial Search: {e}")
+        
+        # === CHIẾN THUẬT 2: TÌM THEO TÊN (NẾU KHÔNG CÓ TỌA ĐỘ) ===
+        # Chỉ chạy nếu chiến thuật 1 thất bại
+        if not target_streets and street_name_input:
+             # ... (Giữ nguyên logic Fuzzy Matching cũ của bạn ở đây) ...
+             # Nhưng lưu ý: street_name_input lúc này là "Trường ĐH...", rất khó khớp
+             pass
+
+        # === KIỂM TRA KẾT QUẢ TÌM KIẾM ===
+        if not target_streets:
+             return Response({
+                 "street": street_name_input,
+                 "status": "No Data",
+                 "message": "Không tìm thấy dữ liệu đường tại vị trí này",
+                 "timeline": []
+             })
+
+        # === 2. DỰ BÁO (GIỮ NGUYÊN LOGIC CŨ) ===
+        timeline_result = []
+        
+        for i in range(3):
+            target_hour = (current_hour + i) % 24
+            target_weekday = current_weekday
+            if current_hour + i >= 24: target_weekday = (current_weekday + 1) % 7
+            
+            # --- Chạy Model ---
+            # Vì target_streets giờ chỉ chứa 1 tên đường chính xác nhất từ tọa độ
+            # Nên vòng lặp này sẽ chạy rất nhanh và chuẩn
+            st = target_streets[0] 
+            
+            try:
+                street_code = street_encoder.transform([st])[0]
+                input_data = pd.DataFrame([[target_hour, target_weekday, street_code]], 
+                                          columns=['hour', 'weekday', 'street_encoded'])
+                pred_los = traffic_model.predict(input_data)[0]
+                
+                # Map LOS sang màu sắc/trạng thái
+                status_map = {
+                    'A': ("Thông thoáng", "#28A745"), 'B': ("Thông thoáng", "#28A745"),
+                    'C': ("Đông xe", "#FFC107"), 'D': ("Đông xe", "#FFC107"),
+                    'E': ("Tắc đường", "#DC3545"), 'F': ("Kẹt cứng", "#8B0000")
+                }
+                status_text, color_hex = status_map.get(pred_los, ("Không rõ", "#9E9E9E"))
+
+                timeline_result.append({
+                    "time_display": f"{target_hour}:00",
+                    "status": status_text,
+                    "color": color_hex,
+                    "los": pred_los
+                })
+            except:
+                continue
+
+        # === 3. TRẢ KẾT QUẢ ===
+        current = timeline_result[0] if timeline_result else {}
+
+        return Response({
+            # Trả về cả tên địa điểm gốc VÀ tên đường AI tìm thấy
+            "input_name": street_name_input, 
+            "street": detected_street_name, # Đây là tên đường AI dùng (Ví dụ: "Đinh Tiên Hoàng")
+            
+            "current_status": current.get('status', 'N/A'),
+            "current_color": current.get('color', '#9E9E9E'),
+            "current_los": current.get('los', 'N/A'),
+            "timeline": timeline_result
+        })

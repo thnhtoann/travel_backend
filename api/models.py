@@ -24,7 +24,22 @@ class Tag(models.Model):
     def __str__(self):
         return self.name
 
-# Product (Dựa trên ProductType.tsx)
+class Place(models.Model):
+    place_id = models.CharField(max_length=255, unique=True) # ID từ Google Maps
+    name = models.CharField(max_length=255)
+    address = models.CharField(max_length=500, blank=True, null=True)
+    lat = models.FloatField()
+    lon = models.FloatField()
+    rating = models.FloatField(default=0.0)
+    reviews = models.IntegerField(default=0)
+    price = models.CharField(max_length=50, blank=True, null=True) # Ví dụ: ₫₫
+    image = models.URLField(max_length=1000, blank=True, null=True)
+    working_hours = models.JSONField(blank=True, null=True) 
+    open_state = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
 class Product(models.Model):
     name = models.CharField(max_length=255)
     weight = models.FloatField(blank=True, null=True)
