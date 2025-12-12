@@ -1,0 +1,62 @@
+# render.yaml
+
+databases:
+  - name: my_django_db
+
+services:
+  # ----------------------------------
+  # 1. WEB SERVICE (Chạy API)
+  # ----------------------------------
+  - type: web
+    name: travel-backend
+    # ✅ Dùng 'env: python' để Render biết đây là ứng dụng Python
+    env: python 
+    region: singapore 
+    
+    # Render tự tìm requirements.txt và cài đặt
+    buildCommand: "pip install -r requirements.txt" 
+    startCommand: "gunicorn travellous.wsgi:application"
+    
+    plan: free 
+    
+    envVars:
+      # ✅ Khai báo biến môi trường bằng danh sách 'envVars'
+      - key: DATABASE_URL
+        fromDatabase:
+          name: my_django_db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "False"
+      - key: WEB_CONCURRENCY
+        value: "4" 
+
+  # ----------------------------------
+  # 2. CHRONIC JOB (Tác vụ ngầm)
+  # ----------------------------------
+  - type: worker
+    name: traffic-checker
+    # ✅ Dùng 'env: python' cho Worker
+    env: python
+    region: singapore
+    plan: free 
+    
+    # ✅ Lệnh chạy script check_trips
+    startCommand: "python manage.py check_trips" 
+    
+    # ✅ Lệnh build phải chạy nếu Worker cần các thư viện đã cài
+    buildCommand: "pip install -r requirements.txt"
+    
+    schedule: "*/15 * * * *" 
+    
+    envVars:
+      # ✅ Copy các biến cần thiết (Worker cần biết DB để đọc Trip)
+      - key: DATABASE_URL
+        fromDatabase:
+          name: my_django_db
+          property: connectionString
+      - key: SECRET_KEY
+        fromService:
+          name: travel-backend
+          key: SECRET_KEY

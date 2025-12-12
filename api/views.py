@@ -89,6 +89,7 @@ try:
     WEATHER_API_KEY = os.environ.get('WEATHER_API_KEY')
     SERPAPI_API_KEY = os.environ.get('SERPAPI_API_KEY')
     GEOAPIFY_API_KEY = os.environ.get('GEOAPIFY_API_KEY')
+    print("hehe")
 except Exception as e:
     print(f"Lỗi cấu hình API Key: {e}")
 
