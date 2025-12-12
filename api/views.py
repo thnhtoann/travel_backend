@@ -21,9 +21,9 @@ import concurrent.futures
 import math
 import json
 from django.conf import settings
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 from .utils import get_external_context, find_and_save_place_info
-load_dotenv()
+# load_dotenv()
 
 BASE_DIR = settings.BASE_DIR
 ML_DIR = os.path.join(BASE_DIR, 'ml_models')

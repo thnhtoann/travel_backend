@@ -2,11 +2,11 @@
 import requests
 import datetime
 import numpy as np
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 import os
 from .models import Place
 from .image_search_service import ImageSearchService
-load_dotenv()
+# load_dotenv()
 
 OPENWEATHER_API_KEY = os.environ.get('WEATHER_API_KEY')
 SERPAPI_KEY = os.environ.get('SERPAPI_API_KEY')
