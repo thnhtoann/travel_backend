@@ -29,7 +29,7 @@ ALLOWED_HOSTS = [
     '127.0.0.1',
     'localhost',
     '10.0.2.2',
-    'thnhtoann.pythonanywhere.com']
+    '*.onrender.com',]
 
 
 # Application definition
