@@ -29,7 +29,8 @@ ALLOWED_HOSTS = [
     '127.0.0.1',
     'localhost',
     '10.0.2.2',
-    '*.onrender.com',]
+    '*.onrender.com',
+    'travel-backend-fbax.onrender.com']
 
 
 # Application definition
