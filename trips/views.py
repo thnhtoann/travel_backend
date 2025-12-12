@@ -5,13 +5,8 @@ from .serializers import TripSerializer
 
 class TripViewSet(viewsets.ModelViewSet):
     serializer_class = TripSerializer
-    # Bắt buộc phải có Token đăng nhập mới được gọi API này
-    permission_classes = [permissions.IsAuthenticated] 
+    permission_classes = [permissions.IsAuthenticated] # Bắt buộc đăng nhập
 
     def get_queryset(self):
-        # Chỉ trả về những chuyến đi của người đang đăng nhập
-        return Trip.objects.filter(user=self.request.user).order_by('-date')
-
-    def perform_create(self, serializer):
-        # Tự động gán người tạo là người đang đăng nhập
-        serializer.save(user=self.request.user)
+        # Chỉ lấy trip của người dùng hiện tại
+        return Trip.objects.filter(user=self.request.user).order_by('-created_at')

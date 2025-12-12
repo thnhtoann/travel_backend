@@ -52,7 +52,11 @@ class CarouselSlideSerializer(serializers.ModelSerializer):
 class PlaceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Place
-        fields = ['id', 'place_id', 'name', 'address', 'lat', 'lon', 'rating', 'reviews', 'price', 'image', 'working_hours', 'open_state']
+        fields = [
+            'id', 'place_id', 'name', 'category', 'description', 
+            'address', 'lat', 'lon', 'rating', 'reviews', 
+            'price', 'image', 'working_hours', 'open_state'
+        ]
         # Ánh xạ thêm trường is_recommended để Frontend dùng luôn
         extra_kwargs = {'id': {'read_only': True}}
     
@@ -60,3 +64,11 @@ class PlaceSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         data['is_recommended'] = True # Mặc định là True cho logic hiển thị
         return data
+    
+class FavoriteSerializer(serializers.ModelSerializer):
+    # Nested Serializer: Để khi lấy Favorite sẽ có luôn thông tin Place
+    place = PlaceSerializer(read_only=True) 
+
+    class Meta:
+        model = Favorite
+        fields = ['id', 'user', 'place', 'created_at']

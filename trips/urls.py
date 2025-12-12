@@ -1,8 +1,10 @@
-# trips/urls.py
 from rest_framework.routers import DefaultRouter
 from .views import TripViewSet
+from django.urls import path, include
 
 router = DefaultRouter()
-router.register(r'', TripViewSet, basename='trips') # Đường dẫn gốc của app này
+router.register(r'', TripViewSet, basename='trips')
 
-urlpatterns = router.urls
+urlpatterns = [
+    path('', include(router.urls)),
+]

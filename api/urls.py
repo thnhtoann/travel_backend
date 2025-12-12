@@ -13,7 +13,7 @@ router.register(r'products', views.ProductViewSet, basename='products')
 router.register(r'categories', views.CategoryViewSet, basename='categories')
 
 urlpatterns = [
-    path('', include(router.urls)),
+    
     path(
         'get-travel-advice/', 
         views.TravelAdviceView.as_view(), 
@@ -21,5 +21,10 @@ urlpatterns = [
     ),
     path('optimize-route/', views.OptimizeRouteView.as_view(), name='optimize-route'),
     path('traffic/predict/', views.PredictTrafficView.as_view(), name='traffic-predict'),
-    path('places/nearby/', views.NearbyPlacesView.as_view())
+    path('places/nearby/', views.NearbyPlacesView.as_view()),
+    path('favorites/', views.FavoriteView.as_view(), name='favorites'),
+    path('', include(router.urls)),
+    path('plan-trip-smart/', views.PlanTripSmartView.as_view(), name='plan-trip-smart'),
+    path('get-good-traffic-routes/', views.GoodTrafficRoutesView.as_view(), name='get-good-traffic-routes'),
+    path('find-green-route/', views.FindGreenRouteView.as_view(), name='find-green-route'),
 ]
