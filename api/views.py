@@ -22,7 +22,7 @@ import json
 from django.conf import settings
 from .utils import get_external_context, find_and_save_place_info
 # from dotenv import load_dotenv
-# load_dotenv();
+# load_dotenv()
 BASE_DIR = settings.BASE_DIR
 ML_DIR = os.path.join(BASE_DIR, 'ml_models')
 
@@ -876,13 +876,14 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
 class FindGreenRouteView(APIView):
     def post(self, request):
         try:
+            # 1. Lấy dữ liệu đầu vào
             start_lat = float(request.data.get('start_lat'))
             start_lon = float(request.data.get('start_lon'))
             end_lat = float(request.data.get('end_lat'))
             end_lon = float(request.data.get('end_lon'))
             
-            STEP_RADIUS_KM = 3.0  
-            MAX_STEPS = 15
+            STEP_RADIUS_KM = 3.0
+            MAX_STEPS = 25
             
             waypoints = []        
             current_lat = start_lat
@@ -893,13 +894,17 @@ class FindGreenRouteView(APIView):
             hour = now.hour
             weekday = now.weekday()
 
+            # 2. Vòng lặp tìm đường (Greedy)
             for step in range(MAX_STEPS):
                 dist_to_dest = calculate_distance(current_lat, current_lon, end_lat, end_lon)
-                if dist_to_dest <= 2.0:
+                
+                # Nếu đã đủ gần đích, thoát vòng lặp để thêm điểm đích cuối cùng
+                if dist_to_dest <= 1.2:
                     break
 
                 target_bearing = calculate_bearing(current_lat, current_lon, end_lat, end_lon)
 
+                # Truy vấn DB (giữ nguyên logic cũ của bạn)
                 lat_min = current_lat - (STEP_RADIUS_KM / 111)
                 lat_max = current_lat + (STEP_RADIUS_KM / 111)
                 lon_min = current_lon - (STEP_RADIUS_KM / 111)
@@ -913,25 +918,23 @@ class FindGreenRouteView(APIView):
                 )
 
                 candidates = list(candidates_qs)
-                if not candidates: break
+                if not candidates: break # Bị kẹt do không có dữ liệu đường
 
                 valid_candidates = []
                 predict_inputs = [] 
 
                 for seg in candidates:
                     if seg['street_name'] not in street_encoder.classes_: continue
-
                     seg_bearing = calculate_bearing(current_lat, current_lon, seg['lat_snode'], seg['long_snode'])
                     angle_diff = abs(target_bearing - seg_bearing)
                     if angle_diff > 180: angle_diff = 360 - angle_diff
-                    
-                    if angle_diff > 85: continue
+                    if angle_diff > 90: continue
                     
                     street_code = street_encoder.transform([seg['street_name']])[0]
                     valid_candidates.append({**seg, 'street_code': street_code, 'angle_diff': angle_diff})
                     predict_inputs.append([hour, weekday, street_code])
 
-                if not valid_candidates: break
+                if not valid_candidates: break # Bị kẹt do không có đường đúng hướng
 
                 input_df = pd.DataFrame(predict_inputs, columns=['hour', 'weekday', 'street_encoded'])
                 predictions = traffic_model.predict(input_df)
@@ -939,27 +942,63 @@ class FindGreenRouteView(APIView):
                 best_next_point = None
                 best_score = float('inf')
 
-                for i, seg in enumerate(valid_candidates):
-                    pred_los = predictions[i]
-                    if pred_los in ['A', 'B']:
-                        dist_seg_to_dest = calculate_distance(seg['lat_enode'], seg['long_enode'], end_lat, end_lon)
-                        score = dist_seg_to_dest + (seg['angle_diff'] * 0.02)
+                # Logic Fallback (A,B -> C -> D)
+                priority_configs = [
+                    {'levels': ['A', 'B'], 'penalty': 0},
+                    {'levels': ['C'],      'penalty': 2.5},
+                    {'levels': ['D'],      'penalty': 6.0}
+                ]
 
-                        if score < best_score:
-                            best_score = score
-                            best_next_point = {
-                                "lat": seg['lat_enode'], "lon": seg['long_enode'],
-                                "name": seg['street_name'], "id": seg['segment_id']
-                            }
+                for config in priority_configs:
+                    for i, seg in enumerate(valid_candidates):
+                        if predictions[i] in config['levels']:
+                            dist_seg_to_dest = calculate_distance(seg['lat_enode'], seg['long_enode'], end_lat, end_lon)
+                            score = dist_seg_to_dest + (seg['angle_diff'] * 0.03) + config['penalty']
+                            if score < best_score:
+                                best_score = score
+                                best_next_point = {
+                                    "lat": seg['lat_enode'], "lon": seg['long_enode'],
+                                    "name": seg['street_name'], "id": seg['segment_id']
+                                }
+                    if best_next_point: break
 
                 if best_next_point:
                     waypoints.append(best_next_point)
                     visited_segment_ids.add(best_next_point['id'])
                     current_lat = best_next_point['lat']
                     current_lon = best_next_point['lon']
-                else: break
+                else:
+                    break # Bị kẹt do tất cả đường đều tắc (Level E, F)
 
-            return Response({"status": "success", "waypoints": waypoints})
+            # ==========================================================
+            # 3. LOGIC QUAN TRỌNG: ĐẢM BẢO LUÔN VỀ ĐÍCH
+            # ==========================================================
+            # Kiểm tra xem điểm cuối cùng trong danh sách đã phải là đích chưa
+            # Nếu chưa, hoặc danh sách trống, ta thêm tọa độ đích vào cuối.
+            
+            final_destination_point = {
+                "lat": end_lat,
+                "lon": end_lon,
+                "name": "Destination",
+                "id": "final_dest"
+            }
+
+            if not waypoints:
+                # Nếu không tìm được bất kỳ điểm xanh nào, nối thẳng từ Start đến End
+                waypoints.append(final_destination_point)
+            else:
+                last_point = waypoints[-1]
+                dist_to_final = calculate_distance(last_point['lat'], last_point['lon'], end_lat, end_lon)
+                
+                # Nếu điểm cuối cùng cách đích > 100 mét, thêm đích vào để khép kín lộ trình
+                if dist_to_final > 0.1:
+                    waypoints.append(final_destination_point)
+
+            return Response({
+                "status": "success", 
+                "waypoints": waypoints,
+                "is_complete": True
+            })
 
         except Exception as e:
             return Response({"status": "error", "message": str(e)}, status=500)
