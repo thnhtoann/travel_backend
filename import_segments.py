@@ -37,7 +37,7 @@ def import_data():
 
         # Dùng bulk_create để insert nhanh hơn
         TrafficSegment.objects.bulk_create(segments_to_create, batch_size=1000)
-        print("🎉 Đã Import thành công!")
+        print("Đã Import thành công!")
 
     except Exception as e:
         print(f"❌ Lỗi: {e}")

@@ -1,36 +1,37 @@
-# authentication/views.py
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.contrib.auth import authenticate, get_user_model
 from rest_framework.authtoken.models import Token
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.core.mail import send_mail
-from rest_framework.permissions import IsAuthenticated
 from api.serializers import UserLocationSerializer
-from django.conf import settings # Để lấy EMAIL_HOST_USER
+from django.conf import settings
 import random
 
-# Import Serializers (Đảm bảo bạn đã tạo file serializers.py trong app authentication)
+# Import Serializers (Ensure serializers.py exists in the authentication app)
 from .serializers import RegisterSerializer, LoginSerializer
 
 User = get_user_model()
 
-# Lưu tạm mã OTP trong bộ nhớ (Lưu ý: Sẽ mất khi restart server)
+# Temporary OTP storage in memory (Note: This will be cleared if the server restarts)
 otp_storage = {}
+
 class UpdateLocationView(APIView):
-    permission_classes = [IsAuthenticated] # Bắt buộc phải đăng nhập
+    permission_classes = [IsAuthenticated]  # Authentication required
 
     def post(self, request):
         user = request.user
         serializer = UserLocationSerializer(user, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
-            return Response({"message": "Đã cập nhật vị trí"}, status=200)
+            return Response({"message": "Location updated successfully"}, status=200)
         return Response(serializer.errors, status=400)
+
 class RegisterView(APIView):
-    permission_classes = [AllowAny] # Cho phép ai cũng đăng ký được
+    permission_classes = [AllowAny]  # Publicly accessible
     authentication_classes = []
+
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
         if serializer.is_valid():
@@ -45,15 +46,16 @@ class RegisterView(APIView):
 class LoginView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
+
     def post(self, request):
-        # Logic hỗ trợ đăng nhập bằng cả Username HOẶC Email
+        # Support login using either Username OR Email
         login_input = request.data.get("username")
         password = request.data.get("password")
 
         if not login_input or not password:
-             return Response({"error": "Vui lòng nhập tài khoản và mật khẩu"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Please enter both username/email and password"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Tìm user theo email trước
+        # Attempt to find user by email first
         actual_username = login_input
         try:
             user_obj = User.objects.get(email=login_input)
@@ -69,61 +71,63 @@ class LoginView(APIView):
                 "token": token.key,
                 "user": { "id": user.id, "username": user.username, "email": user.email } 
             })
-        return Response({"error": "Sai tài khoản hoặc mật khẩu"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Invalid username or password"}, status=status.HTTP_400_BAD_REQUEST)
 
 class RequestPasswordResetView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
+
     def post(self, request):
         email = request.data.get('email')
         if not email:
-            return Response({"error": "Vui lòng nhập email"}, status=400)
+            return Response({"error": "Please provide an email address"}, status=400)
         
         try:
             user = User.objects.get(email=email)
             
-            # 1. Tạo mã OTP
+            # 1. Generate OTP
             otp = str(random.randint(100000, 999999))
             otp_storage[email] = otp
             
-            print(f"===== OTP CHO {email}: {otp} =====")
+            print(f"===== OTP FOR {email}: {otp} =====")
             
-            # 2. Gửi Email (Bỏ comment khi đã cấu hình SMTP)
+            # 2. Send Email
             try:
                 send_mail(
-                    subject='[Travellous] Mã xác thực đặt lại mật khẩu',
-                    message=f'Mã OTP của bạn là: {otp}',
+                    subject='[NavEase] Password Reset Verification Code',
+                    message=f'Your OTP: {otp}',
                     from_email=settings.EMAIL_HOST_USER,
                     recipient_list=[email],
                     fail_silently=False,
                 )
             except Exception as e:
-                print(f"Lỗi gửi mail: {e}")
-                # Vẫn trả về thành công để user nhập OTP (nếu bạn đang test bằng console log)
+                print(f"Mail delivery error: {e}")
+                # Still returning success so user can use OTP from console during testing
 
-            return Response({"message": "Mã OTP đã được gửi đến email."}, status=200)
+            return Response({"message": "OTP code has been sent to your email."}, status=200)
             
         except User.DoesNotExist:
-            # Bảo mật: Không tiết lộ email chưa đăng ký
-            return Response({"message": "Mã OTP đã được gửi đến email."}, status=200)
+            # Security: Do not reveal if an email is not registered
+            return Response({"message": "OTP code has been sent to your email."}, status=200)
 
 class VerifyOTPView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    """API chỉ để kiểm tra xem mã OTP có đúng không"""
+
+    """API to verify if the OTP code is correct"""
     def post(self, request):
         email = request.data.get('email')
         otp = request.data.get('otp')
         
         if not email or not otp:
-            return Response({"error": "Thiếu thông tin"}, status=400)
+            return Response({"error": "Missing information"}, status=400)
         
         stored_otp = otp_storage.get(email)
         
         if not stored_otp or stored_otp != otp:
-            return Response({"error": "Mã OTP không chính xác hoặc đã hết hạn"}, status=400)
+            return Response({"error": "Invalid or expired OTP code"}, status=400)
             
-        return Response({"message": "OTP hợp lệ"}, status=200)
+        return Response({"message": "OTP is valid"}, status=200)
 
 class ResetPasswordConfirmView(APIView):
     permission_classes = [AllowAny]
@@ -131,25 +135,25 @@ class ResetPasswordConfirmView(APIView):
 
     def post(self, request):
         email = request.data.get('email')
-        otp = request.data.get('otp') # Vẫn nên check lại OTP lần cuối cho an toàn
+        otp = request.data.get('otp') # Final OTP verification for security
         new_password = request.data.get('new_password')
         
         if not email or not otp or not new_password:
-            return Response({"error": "Thiếu thông tin"}, status=400)
+            return Response({"error": "Missing information"}, status=400)
         
         stored_otp = otp_storage.get(email)
         if not stored_otp or stored_otp != otp:
-            return Response({"error": "Phiên làm việc hết hạn, vui lòng thử lại"}, status=400)
+            return Response({"error": "Session expired, please try again"}, status=400)
         
         try:
             user = User.objects.get(email=email)
             user.set_password(new_password)
             user.save()
             
-            # Xóa OTP
-            del otp_storage[email]
+            # Clear OTP from memory after successful reset
+            if email in otp_storage:
+                del otp_storage[email]
             
-            return Response({"message": "Đặt lại mật khẩu thành công"}, status=200)
+            return Response({"message": "Password has been reset successfully"}, status=200)
         except User.DoesNotExist:
-            return Response({"error": "Lỗi hệ thống"}, status=400)
-
+            return Response({"error": "System error occurred"}, status=400)

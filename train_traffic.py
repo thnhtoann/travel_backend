@@ -37,7 +37,7 @@ def train():
     # 1. Đọc dữ liệu
     try:
         df = pd.read_csv(DATA_PATH)
-        print(f"✅ Đã tải {len(df)} dòng dữ liệu.")
+        print(f"Đã tải {len(df)} dòng dữ liệu.")
     except Exception as e:
         print(f"❌ Lỗi đọc CSV: {e}")
         return
