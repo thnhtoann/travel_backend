@@ -57,16 +57,15 @@ class PlaceSerializer(serializers.ModelSerializer):
             'address', 'lat', 'lon', 'rating', 'reviews', 
             'price', 'image', 'working_hours', 'open_state'
         ]
-        # Ánh xạ thêm trường is_recommended để Frontend dùng luôn
         extra_kwargs = {'id': {'read_only': True}}
     
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        data['is_recommended'] = True # Mặc định là True cho logic hiển thị
+        data['is_recommended'] = True
         return data
     
 class FavoriteSerializer(serializers.ModelSerializer):
-    # Nested Serializer: Để khi lấy Favorite sẽ có luôn thông tin Place
+    # Nested Serializer:
     place = PlaceSerializer(read_only=True) 
 
     class Meta:

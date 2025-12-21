@@ -21,8 +21,8 @@ import math
 import json
 from django.conf import settings
 from .utils import get_external_context, find_and_save_place_info
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 BASE_DIR = settings.BASE_DIR
 ML_DIR = os.path.join(BASE_DIR, 'ml_models')
 
